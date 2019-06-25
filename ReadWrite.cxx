@@ -15,6 +15,7 @@
 #include "itkAdaptiveHistogramEqualizationImageFilter.h"
 #include "itkThresholdImageFilter.h"
 #include "itkBinaryThresholdImageFilter.h"
+#include "itkVotingBinaryIterativeHoleFillingImageFilter.h"
 
 #include <string>
 #include <chrono>
@@ -41,9 +42,11 @@ typedef itk::MedianImageFilter< ImageType, ImageType > MedianFilterType;
 typedef unsigned long long int uli;
 
 using BinThFilterType = itk::BinaryThresholdImageFilter< ImageType, ImageType >;
+using VotBinFillHoleFilterType = itk::VotingBinaryIterativeHoleFillingImageFilter< ImageType >;
 
 int my_otsu(uli* histogram, int bins, ImageType::SizeType img_size, uli sum);
-void write_out_dicom_with_filter(std::string outputDirectory, BinThFilterType::Pointer filter, NamesGeneratorType::Pointer namesGenerator, ImageIOType::Pointer gdcmIO, ReaderType::Pointer reader);
+template <class myType>
+void write_out_dicom_with_filter(std::string outputDirectory, myType filter, NamesGeneratorType::Pointer namesGenerator, ImageIOType::Pointer gdcmIO, ReaderType::Pointer reader);
 int threshold_with_itk_otsu(int numberOfThresholds, ReaderType::Pointer reader);
 int otsu_on_custom_threshold(int bins, ReaderType::Pointer reader);
 
@@ -91,9 +94,12 @@ int main(int argc, char* argv[]) {
         std::cerr << excp << std::endl;
         return EXIT_FAILURE;
     }
-
+    // for measure time
     std::chrono::high_resolution_clock::time_point t1;
     std::chrono::high_resolution_clock::time_point t2;
+
+
+    int numberOfIterations = 1;
 
     // Use my solution for otsu
     t1 = std::chrono::high_resolution_clock::now();
@@ -102,16 +108,41 @@ int main(int argc, char* argv[]) {
     auto duration_my = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
     std::cout << "my threshold:  " << threshold_my <<" time(ms): "<< duration_my << std::endl;
 
-    BinThFilterType::Pointer filter = BinThFilterType::New();
-    filter->SetInput(reader->GetOutput());
-    filter->SetLowerThreshold(threshold_my);
-    filter->SetUpperThreshold(9000);
-    filter->SetOutsideValue(0);
-    filter->SetInsideValue(2000);
+    // Thresholding
+    BinThFilterType::Pointer th_filter = BinThFilterType::New();
+    th_filter->SetInput(reader->GetOutput());
+    th_filter->SetLowerThreshold(threshold_my);
+    th_filter->SetUpperThreshold(9000);
+    th_filter->SetOutsideValue(0);
+    th_filter->SetInsideValue(2000);
 
     std::string out_folder_name = argv[2];
     out_folder_name.append("_custom");
-    write_out_dicom_with_filter(out_folder_name, filter, namesGenerator, gdcmIO, reader);
+    write_out_dicom_with_filter<BinThFilterType::Pointer>(out_folder_name, th_filter, namesGenerator, gdcmIO, reader);
+
+    // Fill hole
+    VotBinFillHoleFilterType::InputSizeType radius;
+    radius.Fill(3);
+
+    VotBinFillHoleFilterType::Pointer fill_hole_filter = VotBinFillHoleFilterType::New();
+    fill_hole_filter->SetInput(th_filter->GetOutput());
+    fill_hole_filter->SetRadius(radius);
+    fill_hole_filter->SetMajorityThreshold(1); // default is 1
+    fill_hole_filter->SetBackgroundValue(0);
+    fill_hole_filter->SetForegroundValue(2000);
+    fill_hole_filter->SetMaximumNumberOfIterations(2);
+
+    t1 = std::chrono::high_resolution_clock::now();
+    fill_hole_filter->Update();
+    t2 = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
+    std::cout << "Fill hole time: " << duration << std::endl;
+
+    out_folder_name.append("_fill_hole");
+    write_out_dicom_with_filter<VotBinFillHoleFilterType::Pointer>(out_folder_name, fill_hole_filter, namesGenerator, gdcmIO, reader);
+
+
+    /*********************************************************************/
 
     // Use itk's algorithm
     t1 = std::chrono::high_resolution_clock::now();
@@ -122,22 +153,46 @@ int main(int argc, char* argv[]) {
 
     std::cout << "ratio: " << (double(duration_itk) / double(duration_my)) << std::endl;
 
+    //Thresholding
     //BinThFilterType::Pointer filter = BinThFilterType::New();
-    filter->SetInput(reader->GetOutput());
-    filter->SetLowerThreshold(threshold_itk);
-    filter->SetUpperThreshold(9000);
-    filter->SetOutsideValue(0);
-    filter->SetInsideValue(4000);
+    th_filter->SetInput(reader->GetOutput());
+    th_filter->SetLowerThreshold(threshold_itk);
+    th_filter->SetUpperThreshold(9000);
+    th_filter->SetOutsideValue(0);
+    th_filter->SetInsideValue(4000);
 
     out_folder_name = argv[2];
     out_folder_name.append("_itk");
-    write_out_dicom_with_filter(out_folder_name, filter, namesGenerator, gdcmIO, reader);
+    write_out_dicom_with_filter<BinThFilterType::Pointer>(out_folder_name, th_filter, namesGenerator, gdcmIO, reader);
+
+    // Fill hole
+    //VotBinFillHoleFilterType::InputSizeType radius;
+    radius.Fill(2);
+
+    //VotBinFillHoleFilterType::Pointer filter = VotBinFillHoleFilterType::New();
+    fill_hole_filter->SetInput(th_filter->GetOutput());
+    fill_hole_filter->SetRadius(radius);
+    fill_hole_filter->SetMajorityThreshold(1); // default is 1
+    fill_hole_filter->SetBackgroundValue(0);
+    fill_hole_filter->SetForegroundValue(4000);
+    fill_hole_filter->SetMaximumNumberOfIterations(numberOfIterations);
+
+    t1 = std::chrono::high_resolution_clock::now();
+    fill_hole_filter->Update();
+    t2 = std::chrono::high_resolution_clock::now();
+    duration = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
+    std::cout << "Fill hole time: " << duration << std::endl;
+
+    out_folder_name.append("_fill_hole");
+    write_out_dicom_with_filter<VotBinFillHoleFilterType::Pointer>(out_folder_name, fill_hole_filter, namesGenerator, gdcmIO, reader);
+
+    /**********************************************************************/
 
     return EXIT_SUCCESS;
 
 }
-
-void write_out_dicom_with_filter(std::string outputDirectory, BinThFilterType::Pointer filter, NamesGeneratorType::Pointer namesGenerator, ImageIOType::Pointer gdcmIO, ReaderType::Pointer reader) {
+template <class myType>
+void write_out_dicom_with_filter(std::string outputDirectory, myType filter, NamesGeneratorType::Pointer namesGenerator, ImageIOType::Pointer gdcmIO, ReaderType::Pointer reader) {
     itksys::SystemTools::MakeDirectory(outputDirectory);
 
     SeriesWriterType::Pointer seriesWriter = SeriesWriterType::New();
