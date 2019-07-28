@@ -15,5 +15,5 @@ ELSE(ITK_FOUND)
 
 ENDIF(ITK_FOUND)
  
-add_executable(ReadWrite ReadWrite.cxx)
+add_executable(ReadWrite ReadWrite.cxx getopt.c getopt.h)
 target_link_libraries(ReadWrite ${ITK_LIBRARIES})
